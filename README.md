@@ -7,7 +7,12 @@
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![deps](https://img.shields.io/badge/dependencies-%E6%97%A0-brightgreen)
-[![release](https://img.shields.io/github/v/release/MadmanJohnny/hecate-g2-voice-switch?label=%E4%B8%8B%E8%BD%BD)](https://github.com/MadmanJohnny/hecate-g2-voice-switch/releases)
+[![release](https://img.shields.io/github/v/release/MadmanJohnny/hecate-g2-mic-switch?label=%E4%B8%8B%E8%BD%BD)](https://github.com/MadmanJohnny/hecate-g2-mic-switch/releases/latest)
+[![Gitee](https://img.shields.io/badge/Gitee-%E5%9B%BD%E5%86%85%E9%95%9C%E5%83%8F-c71d23?logo=gitee)](https://gitee.com/madjohnny/hecate-g2-mic-switch)
+
+> **仓库地址**
+> GitHub: <https://github.com/MadmanJohnny/hecate-g2-mic-switch>
+> Gitee（国内镜像，下载更快）: <https://gitee.com/madjohnny/hecate-g2-mic-switch>
 
 ![界面截图](docs/images/screenshot-main.png)
 
@@ -33,8 +38,12 @@ HECATE G2 的线控上有个麦克风开关。它会给 Windows 发 HID 报告�
 
 ### 方式一：直接用打包好的 exe（推荐）
 
-到 [Releases](https://github.com/MadmanJohnny/hecate-g2-voice-switch/releases) 下载
-`HECATE-G2-VoiceSwitch.exe`（约 13 MB，单文件），双击运行，点「开始桥接」，完事。
+| 平台 | 下载 |
+|---|---|
+| GitHub Releases | <https://github.com/MadmanJohnny/hecate-g2-mic-switch/releases/latest> |
+| Gitee Releases（国内更快） | <https://gitee.com/madjohnny/hecate-g2-mic-switch/releases> |
+
+下载 `HECATE-G2-VoiceSwitch.exe`（约 13 MB，单文件），双击运行，点「开始桥接」，完事。
 
 > 想开机自动生效：切到「设置」页，勾选「开机自动启动本程序」和
 > 「程序启动后自动开始桥接」，保存即可。
@@ -44,8 +53,9 @@ HECATE G2 的线控上有个麦克风开关。它会给 Windows 发 HID 报告�
 只需要 Python 3.8+，**没有任何第三方依赖**（界面用的 tkinter 是标准库自带的）。
 
 ```bash
-git clone https://github.com/MadmanJohnny/hecate-g2-voice-switch.git
-cd hecate-g2-voice-switch
+git clone https://github.com/MadmanJohnny/hecate-g2-mic-switch.git
+# 国内推荐用镜像：git clone https://gitee.com/madjohnny/hecate-g2-mic-switch.git
+cd hecate-g2-mic-switch
 
 python src/bridge_gui.py          # 图形界面
 # 或
@@ -258,5 +268,6 @@ noise floor is far above the threshold. This makes the mapping immune to
 unplug/replug and missed events.
 
 No third-party dependencies. Prebuilt single-file exe available in
-[Releases](https://github.com/MadmanJohnny/hecate-g2-voice-switch/releases).
+[Releases](https://github.com/MadmanJohnny/hecate-g2-mic-switch/releases/latest)
+(also mirrored on [Gitee](https://gitee.com/madjohnny/hecate-g2-mic-switch)).
 Windows only. Licensed under MIT.
