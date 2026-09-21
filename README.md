@@ -210,7 +210,8 @@ HECATE G2 具备该特性，但**不是所有耳机都有**。
 │   ├── hid_probe.py            HID 能力查看 / 报告抓取 / 描述符解析
 │   ├── diag_test.py            HID 事件时间线 + 麦克风电平对照
 │   ├── mute_probe.ps1          Core Audio 静音状态监视
-│   └── key_combo_test.py       组合键注入测试
+│   ├── key_combo_test.py       组合键注入测试
+│   └── capture_window.ps1      高 DPI 下不会偏移的窗口截图（文档配图用）
 ├── docs/
 │   ├── 原理与实测.md            完整的实测过程与结论
 │   ├── 排错.md
