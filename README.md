@@ -15,7 +15,7 @@
 > Gitee（国内镜像，下载更快）: <https://gitee.com/madjohnny/hecate-g2-mic-switch>
 
 ![界面截图](docs/images/screenshot-main.png)
-![界面截图](docs/images/screenshot-main.png)
+![1](docs/images/screenshot-main.png)
 ---
 
 ## 这是什么
