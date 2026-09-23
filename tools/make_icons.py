@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""生成图标资源（全部用标准库，不依赖 Pillow / Ghostscript / ImageMagick）
+"""生成图标资源（只用标准库，不依赖 Pillow / Ghostscript / ImageMagick）
 
-数据源按优先级自动选择：
-    1. assets/app-ICON.png    位图设计稿（推荐）—— 直接解码后按面积平均降采样
-    2. assets/icon-source.eps 矢量设计稿 —— 内置迷你 PostScript 解释器光栅化
-    3. 都没有 —— 退回用 src/tray_icon.py 里代码画的图形
+数据源：
+    1. assets/app-ICON.png   位图设计稿 —— 内置纯标准库的 PNG 解码器读取，
+                             再按面积平均降采样成各个尺寸
+    2. 找不到设计稿时，退回用 src/tray_icon.py 里代码画的图形
 
 生成：
     assets/app.ico                 exe 与系统托盘图标（16/24/32/48/64/128/256）
@@ -13,7 +13,6 @@
 用法：
     python tools/make_icons.py
 """
-import math
 import os
 import struct
 import sys
@@ -24,14 +23,13 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 import tray_icon as ti  # noqa: E402
 
 PNG_SRC = os.path.join(ROOT, "assets", "app-ICON.png")
-EPS_SRC = os.path.join(ROOT, "assets", "icon-source.eps")
 ICO_PATH = os.path.join(ROOT, "assets", "app.ico")
 IMG_DIR = os.path.join(ROOT, "docs", "images")
 SIZES = [16, 24, 32, 48, 64, 128, 256]
 
 
 # --------------------------------------------------------------------------
-# PNG 解码（8 位，非隔行，灰度/RGB/调色板/灰度+Alpha/RGBA 都支持）
+# PNG 解码（8 位、非隔行；灰度 / RGB / 调色板 / 灰度+Alpha / RGBA 都支持）
 # --------------------------------------------------------------------------
 def decode_png(path):
     """返回 (宽, 高, RGBA bytes)"""
@@ -134,133 +132,8 @@ def alpha_bbox(rgba, w, h, thresh=8):
     return x0, y0, x1, y1
 
 
-# --------------------------------------------------------------------------
-# 迷你 PostScript 解释器（矢量稿 *.eps 用，只在没有 PNG 源时才走这条路）
-# --------------------------------------------------------------------------
-def _flatten_cubic(p0, p1, p2, p3, steps=16):
-    out = []
-    for i in range(1, steps + 1):
-        t = i / steps
-        mt = 1 - t
-        out.append((mt ** 3 * p0[0] + 3 * mt * mt * t * p1[0]
-                    + 3 * mt * t * t * p2[0] + t ** 3 * p3[0],
-                    mt ** 3 * p0[1] + 3 * mt * mt * t * p1[1]
-                    + 3 * mt * t * t * p2[1] + t ** 3 * p3[1]))
-    return out
-
-
-def parse_eps(path):
-    """返回 (bbox, [(rgb, [子路径...]), ...])，坐标为 PostScript 用户坐标"""
-    with open(path, "r", encoding="latin-1") as fh:
-        text = fh.read()
-    bbox = (0.0, 0.0, 762.0, 819.0)
-    for line in text.splitlines():
-        if line.startswith("%%BoundingBox:"):
-            bbox = tuple(float(v) for v in line.split(":")[1].split()[:4])
-            break
-    idx = text.find("%%EndPageSetup")
-    body = text[idx + len("%%EndPageSetup"):] if idx >= 0 else text
-    body = body.split("%%Trailer")[0]
-    tokens = body.replace("\r", " ").replace("\n", " ").split()
-
-    stack, gstack, subpaths, cur, fills = [], [], [], None, []
-    state = {"rgb": (0.0, 0.0, 0.0)}
-    for tok in tokens:
-        try:
-            stack.append(float(tok))
-            continue
-        except ValueError:
-            pass
-        if tok == "q":
-            gstack.append(dict(state))
-        elif tok == "Q":
-            if gstack:
-                state = gstack.pop()
-        elif tok == "rg" and len(stack) >= 3:
-            state["rgb"] = (stack[-3], stack[-2], stack[-1])
-            stack = stack[:-3]
-        elif tok == "g" and stack:
-            state["rgb"] = (stack[-1],) * 3
-            stack = stack[:-1]
-        elif tok == "m" and len(stack) >= 2:
-            cur = [(stack[-2], stack[-1])]
-            subpaths.append(cur)
-            stack = stack[:-2]
-        elif tok == "l" and len(stack) >= 2 and cur is not None:
-            cur.append((stack[-2], stack[-1]))
-            stack = stack[:-2]
-        elif tok == "c" and len(stack) >= 6 and cur is not None:
-            cur.extend(_flatten_cubic(cur[-1], (stack[-6], stack[-5]),
-                                      (stack[-4], stack[-3]),
-                                      (stack[-2], stack[-1])))
-            stack = stack[:-6]
-        elif tok == "h":
-            cur = None
-        elif tok in ("f", "F", "f*"):
-            polys = [p for p in subpaths if len(p) >= 3]
-            if polys:
-                fills.append((state["rgb"], polys))
-            subpaths, cur, stack = [], None, []
-        elif tok in ("n", "N", "S"):
-            subpaths, cur, stack = [], None, []
-        elif tok in ("re", "rectclip"):
-            stack = []
-    return bbox, fills
-
-
-def rasterize_eps(bbox, fills, size):
-    x0, y0, x1, y1 = bbox
-    aw, ah = x1 - x0, y1 - y0
-    scale = size * 0.96 / max(aw, ah)
-    offx = (size - aw * scale) / 2.0
-    offy = (size - ah * scale) / 2.0
-    buf = bytearray(size * size * 4)
-
-    def tx(p):
-        return (offx + (p[0] - x0) * scale, offy + (y1 - p[1]) * scale)
-
-    for rgb, polys in fills:
-        r = max(0, min(255, int(round(rgb[0] * 255))))
-        g = max(0, min(255, int(round(rgb[1] * 255))))
-        b = max(0, min(255, int(round(rgb[2] * 255))))
-        edges = []
-        for poly in polys:
-            pts = [tx(p) for p in poly]
-            n = len(pts)
-            for i in range(n):
-                ax, ay = pts[i]
-                bx, by = pts[(i + 1) % n]
-                if ay != by:
-                    edges.append((ax, ay, bx, by))
-        if not edges:
-            continue
-        ymin = max(0, int(min(min(e[1], e[3]) for e in edges)))
-        ymax = min(size - 1, int(max(max(e[1], e[3]) for e in edges)) + 1)
-        for py in range(ymin, ymax + 1):
-            yc = py + 0.5
-            xs = []
-            for (ax, ay, bx, by) in edges:
-                if (ay <= yc < by) or (by <= yc < ay):
-                    t = (yc - ay) / (by - ay)
-                    xs.append((ax + t * (bx - ax), 1 if by > ay else -1))
-            if len(xs) < 2:
-                continue
-            xs.sort()
-            wind, base = 0, py * size * 4
-            for i in range(len(xs) - 1):
-                wind += xs[i][1]
-                if wind == 0:
-                    continue
-                pa = max(0, int(math.ceil(xs[i][0] - 0.5)))
-                pb = min(size - 1, int(math.floor(xs[i + 1][0] - 0.5)))
-                for px in range(pa, pb + 1):
-                    o = base + px * 4
-                    buf[o], buf[o + 1], buf[o + 2], buf[o + 3] = r, g, b, 255
-    return buf
-
-
 def render_fallback(size):
-    """最后退路：用代码画的图形"""
+    """设计稿缺失时的退路：用 src/tray_icon.py 里代码画的图形"""
     live = ti.COLORS["live"]
     rgba = bytearray(size * size * 4)
     for y in range(size):
@@ -397,25 +270,17 @@ def compose(items, pad=14, bg=(0xF2, 0xF2, 0xF4)):
 
 
 def main():
-    master = master_n = None
-
     if os.path.exists(PNG_SRC):
         print("数据源: %s" % PNG_SRC)
-        w, h, rgba = decode_png(PNG_SRC)
+        w, h, master = decode_png(PNG_SRC)
         print("  解码完成 %dx%d RGBA" % (w, h))
-        x0, y0, x1, y1 = alpha_bbox(rgba, w, h)
+        x0, y0, x1, y1 = alpha_bbox(master, w, h)
         cw, chh = x1 - x0 + 1, y1 - y0 + 1
         print("  非透明区域: %d x %d（占画布 %.0f%% x %.0f%%）"
               % (cw, chh, 100.0 * cw / w, 100.0 * chh / h))
-        master, master_n = rgba, w
-    elif os.path.exists(EPS_SRC):
-        print("数据源: %s" % EPS_SRC)
-        bbox, fills = parse_eps(EPS_SRC)
-        print("  矢量填充块: %d 个" % len(fills))
-        master_n = 1024
-        master = rasterize_eps(bbox, fills, master_n)
+        master_n = w
     else:
-        print("未找到设计稿，改用代码绘制的图形")
+        print("未找到 %s，改用代码绘制的图形" % PNG_SRC)
         master_n = 512
         master = render_fallback(master_n)
 

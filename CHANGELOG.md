@@ -16,10 +16,10 @@
   - `--minimized` 启动参数改为直接收进托盘，配合开机自启不会弹窗打扰
 - **图标**：改用设计稿渲染出的 `assets/app.ico`（16~256 共 7 个尺寸），
   exe 与托盘使用同一份图标
-  - 新增 `tools/make_icons.py`：优先读取位图设计稿 `assets/app-ICON.png`
-    （内置纯标准库 PNG 解码器），没有位图时回退到矢量稿
-    `assets/icon-source.eps`（内置迷你 PostScript 解释器）；
-    全程不需要 Pillow / Ghostscript / ImageMagick
+  - 新增 `tools/make_icons.py`：读取位图设计稿 `assets/app-ICON.png`
+    （内置纯标准库 PNG 解码器与 ICO 封装器），
+    全程不需要 Pillow / Ghostscript / ImageMagick；
+    设计稿缺失时回退到代码绘制的图形
   - 托盘图标按系统真实小图标尺寸装载（125% 缩放取 20px 而非虚拟化的 16px），
     高 DPI 下不发虚
   - **标题栏 / 任务栏图标**：以前显示的是 Tk 窗口类自带的那根羽毛

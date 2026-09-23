@@ -186,10 +186,10 @@ HECATE G2 具备该特性，但**不是所有耳机都有**。
 之后点 ✕ 会像以前一样直接退出。
 
 **Q：托盘图标和 exe 图标是哪来的？**
-`assets/app.ico`，由设计稿经 `tools/make_icons.py` 生成：优先读位图稿
-`assets/app-ICON.png`（脚本里内置了纯标准库的 PNG 解码器），
-没有位图时回退到矢量稿 `assets/icon-source.eps`（内置迷你 PostScript 解释器）。
-**全程只用标准库，不需要 Pillow / Ghostscript / ImageMagick。**
+`assets/app.ico`，由设计稿 `assets/app-ICON.png` 经 `tools/make_icons.py` 生成。
+那个脚本里内置了纯标准库的 PNG 解码器（5 种行过滤器都支持）和一个 ICO 封装器，
+**全程不需要 Pillow / Ghostscript / ImageMagick**；
+设计稿缺失时会退回用代码画的图形。
 托盘和 exe 用同一份图标，16~256 共 7 个尺寸预先渲染好；
 高 DPI 下按系统真实的小图标尺寸装载（125% 缩放取 20px 而不是被虚拟化的 16px），
 所以不会发虚。标题栏和任务栏的图标也是同一份——
@@ -246,15 +246,15 @@ Tk 默认不设 `WM_GETICON`，系统会落到窗口类自带的那根羽毛（T
 │   ├── diag_test.py            HID 事件时间线 + 麦克风电平对照
 │   ├── mute_probe.ps1          Core Audio 静音状态监视
 │   ├── key_combo_test.py       组合键注入测试
-│   └── capture_window.ps1      高 DPI 下不会偏移的窗口截图（文档配图用）
+│   ├── capture_window.ps1      高 DPI 下不会偏移的窗口截图（文档配图用）
+│   └── make_icons.py           由设计稿生成 app.ico 与各尺寸预览图
 ├── docs/
 │   ├── 原理与实测.md            完整的实测过程与结论
 │   ├── 排错.md
 │   ├── 使用说明.txt             给最终用户的简易说明（可随 exe 分发）
 │   └── images/
 ├── assets/
-│   ├── app-ICON.png            位图设计稿（图标数据源）
-│   ├── icon-source.eps         矢量设计稿（备用数据源）
+│   ├── app-ICON.png            图标设计稿（数据源）
 │   └── app.ico                 exe / 托盘图标（由 tools/make_icons.py 生成）
 └── build_exe.cmd               一键打包 exe
 ```
