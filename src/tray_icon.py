@@ -55,11 +55,20 @@ user32.LoadImageW.restype = w.HANDLE
 user32.LoadImageW.argtypes = [w.HANDLE, w.LPCWSTR, w.UINT, ctypes.c_int,
                               ctypes.c_int, w.UINT]
 user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+user32.SendMessageW.restype = ctypes.c_ssize_t
+user32.SendMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
+shell32.ExtractIconExW.argtypes = [w.LPCWSTR, ctypes.c_int,
+                                   ctypes.POINTER(w.HANDLE),
+                                   ctypes.POINTER(w.HANDLE), w.UINT]
+shell32.ExtractIconExW.restype = w.UINT
 try:
     user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
     user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
 except AttributeError:
     pass
+
+WM_SETICON = 0x0080
+ICON_SMALL, ICON_BIG, ICON_SMALL2 = 0, 1, 2
 
 
 def asset_dir():
@@ -75,10 +84,10 @@ def default_icon_path():
     return os.path.join(asset_dir(), "app.ico")
 
 
-def small_icon_size():
-    """系统托盘小图标的真实像素尺寸。
+def _dpi_aware_metric(index):
+    """按系统真实 DPI 取一个 GetSystemMetrics 指标。
 
-    本进程是 DPI 不感知的，GetSystemMetrics 会被虚拟化（缩放 125% 时只返回 16，
+    本进程是 DPI 不感知的，直接取会被虚拟化（缩放 125% 时小图标只返回 16，
     实际需要 20）。这里临时把当前线程切成 DPI 感知取一次真实值，取完立刻还原，
     不影响 tkinter。
     """
@@ -89,16 +98,29 @@ def small_icon_size():
     except Exception:
         ctx = None
     try:
-        s = user32.GetSystemMetrics(SM_CXSMICON) or 16
+        v = user32.GetSystemMetrics(index) or 0
     except Exception:
-        s = 16
+        v = 0
     finally:
         if ctx:
             try:
                 user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(ctx))
             except Exception:
                 pass
-    return max(16, min(int(s), 64))
+    return int(v)
+
+
+SM_CXICON = 11
+
+
+def small_icon_size():
+    """系统托盘小图标的真实像素尺寸"""
+    return max(16, min(_dpi_aware_metric(SM_CXSMICON) or 16, 64))
+
+
+def large_icon_size():
+    """系统大图标（任务栏、Alt+Tab）的真实像素尺寸"""
+    return max(32, min(_dpi_aware_metric(SM_CXICON) or 32, 128))
 
 
 def load_icon_file(path, size=None):
@@ -116,6 +138,50 @@ def load_icon_file(path, size=None):
         except Exception:
             pass
     return None
+
+
+def load_icon_from_exe(size=None):
+    """从当前 exe 自身的资源里取图标（打包时 --icon 已经把图标嵌进去了）"""
+    if not getattr(sys, "frozen", False):
+        return None
+    large, small = w.HANDLE(), w.HANDLE()
+    try:
+        n = shell32.ExtractIconExW(sys.executable, 0, ctypes.byref(large),
+                                   ctypes.byref(small), 1)
+    except Exception:
+        return None
+    if not n:
+        return None
+    h = small.value or large.value
+    # 两个句柄都用不上的那个要释放，避免泄漏
+    if large.value and large.value != h:
+        try:
+            user32.DestroyIcon(large)
+        except Exception:
+            pass
+    return h
+
+
+def set_window_icon(hwnd, path=None, small=None, big=None):
+    """给窗口设置小/大图标。
+
+    不设的话，标题栏和任务栏会显示 Tk 窗口类自带的默认图标（一根羽毛）。
+    返回保持引用的 HICON 列表（调用方必须留着，否则句柄被回收图标会失效）。
+    """
+    path = path or default_icon_path()
+    small = small or small_icon_size()
+    big = big or large_icon_size()
+    keep = []
+    for idx, size in ((ICON_SMALL, small), (ICON_BIG, big),
+                      (ICON_SMALL2, small)):
+        h = load_icon_file(path, size) or load_icon_from_exe(size)
+        if h:
+            keep.append(h)
+            try:
+                user32.SendMessageW(w.HWND(hwnd), WM_SETICON, idx, h)
+            except Exception:
+                pass
+    return keep
 
 # 状态配色（RGB）
 COLORS = {
@@ -353,9 +419,9 @@ class TrayIcon:
 
         self._create_window()
 
-        # 优先用 assets/app.ico（由用户的矢量设计稿光栅化而来）
+        # 优先用 assets/app.ico（由设计稿生成），再退回 exe 自带资源
         path = icon_file if icon_file is not None else default_icon_path()
-        self.file_icon = load_icon_file(path)
+        self.file_icon = load_icon_file(path) or load_icon_from_exe()
         if self.file_icon:
             self._hicon_owned.add(self.file_icon)
             self.hicon = self.file_icon

@@ -103,6 +103,10 @@ class BridgeGUI:
         self._setup_tray()
         self._refresh_state(self.bridge.snapshot())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        # 窗口首次映射时 Tk 会重建顶层窗口（句柄会变），所以图标必须等映射完成再设；
+        # 绑定 <Map> 是为了从托盘恢复窗口后也能重新设上
+        root.after(200, self._apply_window_icon)
+        root.bind("<Map>", lambda _e: self.root.after(60, self._apply_window_icon))
 
         self._append_log("配置目录：%s" % core.data_dir())
         if self.cfg.get("autostart_bridge"):
@@ -112,6 +116,32 @@ class BridgeGUI:
             self._hide_to_tray(silent=True)
 
     # ------------------------------------------------------------ 系统托盘
+    def _apply_window_icon(self):
+        """把窗口（标题栏 + 任务栏）图标设成我们自己的。
+
+        不设的话会显示 Tk 窗口类自带的默认图标（一根羽毛）：
+        Tk 创建 toplevel 时并不设置 WM_GETICON，系统只能落到窗口类的图标上。
+        """
+        self._win_icons = []
+        path = tray_icon.default_icon_path()
+        try:
+            self.root.iconbitmap(default=path)
+            # Tk 的 iconbitmap 是延迟应用的，先让它落地，再用 WM_SETICON 覆盖，
+            # 否则我们设的大图标会被 Tk 的默认尺寸盖掉
+            self.root.update_idletasks()
+        except Exception:
+            pass
+        try:
+            hwnd = int(self.root.wm_frame(), 16)
+            if hwnd:
+                self._win_icons = tray_icon.set_window_icon(hwnd, path)
+                self._append_log("窗口图标已设置为 %s（%d 个句柄）"
+                                 % (os.path.basename(path), len(self._win_icons)))
+            else:
+                self._append_log("拿不到顶层窗口句柄，窗口图标未设置")
+        except Exception as exc:
+            self._append_log("设置窗口图标失败：%r" % exc)
+
     def _setup_tray(self):
         try:
             self._tray = tray_icon.TrayIcon(
