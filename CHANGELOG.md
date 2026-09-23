@@ -14,10 +14,12 @@
   - 「设置 → 行为」新增开关「点击关闭按钮时最小化到托盘」（默认开启），
     关掉它就恢复成点 ✕ 直接退出
   - `--minimized` 启动参数改为直接收进托盘，配合开机自启不会弹窗打扰
-- **图标**：改用矢量设计稿 `assets/icon-source.eps` 渲染出的
-  `assets/app.ico`（16~256 共 7 个尺寸），exe 与托盘使用同一份图标
-  - 新增 `tools/make_icons.py`：内置迷你 PostScript 解释器，
-    直接把该 EPS 光栅化，不依赖 Ghostscript / ImageMagick
+- **图标**：改用设计稿渲染出的 `assets/app.ico`（16~256 共 7 个尺寸），
+  exe 与托盘使用同一份图标
+  - 新增 `tools/make_icons.py`：优先读取位图设计稿 `assets/app-ICON.png`
+    （内置纯标准库 PNG 解码器），没有位图时回退到矢量稿
+    `assets/icon-source.eps`（内置迷你 PostScript 解释器）；
+    全程不需要 Pillow / Ghostscript / ImageMagick
   - 托盘图标按系统真实小图标尺寸装载（125% 缩放取 20px 而非虚拟化的 16px），
     高 DPI 下不发虚
 

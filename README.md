@@ -186,12 +186,13 @@ HECATE G2 具备该特性，但**不是所有耳机都有**。
 之后点 ✕ 会像以前一样直接退出。
 
 **Q：托盘图标和 exe 图标是哪来的？**
-`assets/app.ico`，由矢量设计稿 `assets/icon-source.eps` 经
-`tools/make_icons.py` 光栅化生成。那个脚本内置了一个够用的迷你
-PostScript 解释器（该 EPS 是 cairo 导出的，只用到 moveto / lineto /
-curveto / fill / setrgbcolor），所以**不需要 Ghostscript / ImageMagick**。
-托盘和 exe 用的是同一份图标，各尺寸（16~256）都预先渲染好，
-高 DPI 下取系统真实的小图标尺寸（如 125% 缩放取 20px），不会发虚。
+`assets/app.ico`，由设计稿经 `tools/make_icons.py` 生成：优先读位图稿
+`assets/app-ICON.png`（脚本里内置了纯标准库的 PNG 解码器），
+没有位图时回退到矢量稿 `assets/icon-source.eps`（内置迷你 PostScript 解释器）。
+**全程只用标准库，不需要 Pillow / Ghostscript / ImageMagick。**
+托盘和 exe 用同一份图标，16~256 共 7 个尺寸预先渲染好；
+高 DPI 下按系统真实的小图标尺寸装载（125% 缩放取 20px 而不是被虚拟化的 16px），
+所以不会发虚。
 
 **Q：为什么不用 pystray / Pillow 做托盘？**
 为了保持**运行时零第三方依赖**——托盘用 `Shell_NotifyIcon`，
@@ -250,7 +251,8 @@ curveto / fill / setrgbcolor），所以**不需要 Ghostscript / ImageMagick**�
 │   ├── 使用说明.txt             给最终用户的简易说明（可随 exe 分发）
 │   └── images/
 ├── assets/
-│   ├── icon-source.eps         矢量设计稿（图标数据源）
+│   ├── app-ICON.png            位图设计稿（图标数据源）
+│   ├── icon-source.eps         矢量设计稿（备用数据源）
 │   └── app.ico                 exe / 托盘图标（由 tools/make_icons.py 生成）
 └── build_exe.cmd               一键打包 exe
 ```
