@@ -8,9 +8,13 @@ if not exist ".venv\Scripts\python.exe" (
   .venv\Scripts\python.exe -m pip install pyinstaller || goto :err
 )
 set ICON=
-if exist "%~dp0assets\app.ico" set ICON=--icon "%~dp0assets\app.ico"
+set DATA=
+if exist "%~dp0assets\app.ico" (
+  set ICON=--icon "%~dp0assets\app.ico"
+  set DATA=--add-data "%~dp0assets\app.ico;assets"
+)
 .venv\Scripts\pyinstaller.exe --noconfirm --clean --onefile --windowed --noupx ^
-  --paths src --name "HECATE-G2-VoiceSwitch" %ICON% ^
+  --paths src --name "HECATE-G2-VoiceSwitch" %ICON% %DATA% ^
   --distpath dist --workpath build --specpath build ^
   src\bridge_gui.py || goto :err
 echo.

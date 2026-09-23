@@ -56,9 +56,7 @@ HELP_TEXT = """【它是怎么工作的】
   3. 想让每次开机自动生效，勾选设置页里的「开机自动启动」。
   4. 点窗口右上角的关闭按钮，程序会收进任务栏右下角的托盘小图标继续运行，
      不会退出；托盘图标左键单击可重新打开窗口，右键菜单里有「退出」。
-
-  托盘图标颜色代表状态：灰色=未启动，蓝色=运行中待命，绿色=正在录音，
-  红色=出错。鼠标悬停可以看到当前状态。
+     鼠标悬停在托盘图标上可以看到当前状态（未启动 / 待命 / 录音中）。
 
 【要注意的事】
 
@@ -823,6 +821,15 @@ def selftest():
     except Exception as exc:
         lines.append("mic=FAIL %r" % exc)
     lines.append("capture_devices=%s" % [n for _i, n in core.list_capture_devices()])
+    try:
+        import tray_icon
+        p = tray_icon.default_icon_path()
+        lines.append("asset_dir=%s" % tray_icon.asset_dir())
+        lines.append("icon_file=%s exists=%s" % (p, os.path.exists(p)))
+        lines.append("icon_small_size=%d" % tray_icon.small_icon_size())
+        lines.append("icon_loaded=%s" % bool(tray_icon.load_icon_file(p)))
+    except Exception as exc:
+        lines.append("tray=FAIL %r" % exc)
     text = "\n".join(lines)
     for path in (os.path.join(os.environ.get("TEMP", "."), "g2vb_selftest.txt"),
                  os.path.join(core.data_dir(), "selftest.txt")):

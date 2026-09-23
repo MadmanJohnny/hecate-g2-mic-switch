@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
-"""重新生成图标资源（都是代码算出来的，改了形状就跑一下这个脚本）
+"""生成图标资源。
+
+优先用 assets/icon-source.eps（用户的矢量设计稿）光栅化；
+如果该文件不存在，就退回用 src/tray_icon.py 里那套代码画的图形。
+
+EPS 是 cairo 导出的纯文本 PostScript，只用到 moveto / lineto / curveto /
+closepath / fill / setrgbcolor / gsave / grestore / rectclip 这几个操作符，
+所以这里内置了一个够用的迷你解释器，不依赖 Ghostscript / ImageMagick。
 
 生成：
-    assets/app.ico                 exe 图标（16/24/32/48/64/128 多尺寸）
-    docs/images/icon-preview.png   各尺寸预览图（README 用）
-    docs/images/icon-states.png    四种状态配色对照
+    assets/app.ico                 exe 与托盘用的图标（多尺寸）
+    docs/images/icon-preview.png   各尺寸预览图
 
 用法：
     python tools/make_icons.py
 """
+import math
 import os
 import struct
 import sys
@@ -18,36 +25,266 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 import tray_icon as ti  # noqa: E402
 
+EPS_PATH = os.path.join(ROOT, "assets", "icon-source.eps")
+ICO_PATH = os.path.join(ROOT, "assets", "app.ico")
+IMG_DIR = os.path.join(ROOT, "docs", "images")
+MASTER = 2048          # 母版分辨率
+FILL = 0.96            # 图形占画布的比例（留点边距）
 
-def render_rgba(size, rgb, ss=4):
-    """与 tray_icon.make_icon_image 相同的绘制逻辑，直接输出自上而下的 RGBA"""
-    r8, g8, b8 = rgb
-    W = size * ss
-    cx = cy = (W - 1) / 2.0
-    R = W * 0.47
-    cov_bg = [0.0] * (size * size)
-    cov_fg = [0.0] * (size * size)
-    for py in range(W):
-        for px in range(W):
-            fx, fy = px + 0.5, py + 0.5
-            if ((fx - cx) ** 2 + (fy - cy) ** 2) ** 0.5 > R:
-                continue
-            i = (py // ss) * size + (px // ss)
-            cov_bg[i] += 1.0
-            if ti._in_headset(fx / W, fy / W):
-                cov_fg[i] += 1.0
-    norm = float(ss * ss)
-    out = bytearray(size * size * 4)
-    for i in range(size * size):
-        a = cov_bg[i] / norm
-        f = cov_fg[i] / norm
-        if a <= 0:
-            continue
-        out[i * 4 + 0] = int(r8 * (1 - f) + 255 * f)
-        out[i * 4 + 1] = int(g8 * (1 - f) + 255 * f)
-        out[i * 4 + 2] = int(b8 * (1 - f) + 255 * f)
-        out[i * 4 + 3] = int(round(a * 255))
+
+# --------------------------------------------------------------------------
+# 迷你 PostScript 解释器：把 EPS 里的填充路径取出来
+# --------------------------------------------------------------------------
+def _flatten_cubic(p0, p1, p2, p3, steps=16):
+    out = []
+    for i in range(1, steps + 1):
+        t = i / steps
+        mt = 1 - t
+        x = (mt ** 3 * p0[0] + 3 * mt * mt * t * p1[0]
+             + 3 * mt * t * t * p2[0] + t ** 3 * p3[0])
+        y = (mt ** 3 * p0[1] + 3 * mt * mt * t * p1[1]
+             + 3 * mt * t * t * p2[1] + t ** 3 * p3[1])
+        out.append((x, y))
     return out
+
+
+def parse_eps(path):
+    """返回 (bbox, [(rgb, [子路径...]), ...])，坐标仍是 PostScript 用户坐标"""
+    with open(path, "r", encoding="latin-1") as fh:
+        text = fh.read()
+
+    bbox = (0.0, 0.0, 762.0, 819.0)
+    for line in text.splitlines():
+        if line.startswith("%%BoundingBox:"):
+            parts = line.split(":")[1].split()
+            bbox = tuple(float(v) for v in parts[:4])
+            break
+
+    # 只取页面正文
+    marker = "%%EndPageSetup"
+    idx = text.find(marker)
+    body = text[idx + len(marker):] if idx >= 0 else text
+    body = body.split("%%Trailer")[0]
+    tokens = body.replace("\r", " ").replace("\n", " ").split()
+
+    stack = []
+    defstate = {"rgb": (0.0, 0.0, 0.0), "gray": 0.0, "linewidth": 1.0}
+    state = dict(defstate)
+    gstack = []
+    subpaths = []
+    cur = None
+    fills = []
+
+    def num(tok):
+        try:
+            return float(tok)
+        except ValueError:
+            return None
+
+    for tok in tokens:
+        v = num(tok)
+        if v is not None:
+            stack.append(v)
+            continue
+        if tok == "q":
+            gstack.append(dict(state))
+        elif tok == "Q":
+            if gstack:
+                state = gstack.pop()
+        elif tok == "rg" and len(stack) >= 3:
+            r, g, b = stack[-3], stack[-2], stack[-1]   # PostScript: red green blue
+            state["rgb"] = (r, g, b)
+            stack = stack[:-3]
+        elif tok == "g" and stack:
+            state["gray"] = stack[-1]
+            state["rgb"] = (stack[-1],) * 3
+            stack = stack[:-1]
+        elif tok == "w" and stack:
+            state["linewidth"] = stack[-1]
+            stack = stack[:-1]
+        elif tok == "m" and len(stack) >= 2:
+            cur = [(stack[-2], stack[-1])]
+            subpaths.append(cur)
+            stack = stack[:-2]
+        elif tok == "l" and len(stack) >= 2 and cur is not None:
+            cur.append((stack[-2], stack[-1]))
+            stack = stack[:-2]
+        elif tok == "c" and len(stack) >= 6 and cur is not None:
+            p0 = cur[-1]
+            p1 = (stack[-6], stack[-5])
+            p2 = (stack[-4], stack[-3])
+            p3 = (stack[-2], stack[-1])
+            cur.extend(_flatten_cubic(p0, p1, p2, p3))
+            stack = stack[:-6]
+        elif tok == "v" and len(stack) >= 4 and cur is not None:
+            p0 = cur[-1]
+            p2 = (stack[-4], stack[-3])
+            p3 = (stack[-2], stack[-1])
+            cur.extend(_flatten_cubic(p0, p0, p2, p3))
+            stack = stack[:-4]
+        elif tok == "y" and len(stack) >= 4 and cur is not None:
+            p0 = cur[-1]
+            p1 = (stack[-4], stack[-3])
+            p3 = (stack[-2], stack[-1])
+            cur.extend(_flatten_cubic(p0, p1, p3, p3))
+            stack = stack[:-4]
+        elif tok == "h":
+            # 子路径已经存在于 subpaths 里，这里只是闭合它；
+            # fill 时按 pts[(i+1) % n] 连回起点，等价于 closepath
+            cur = None
+        elif tok in ("f", "F", "f*"):
+            polys = [p for p in subpaths if len(p) >= 3]
+            if polys:
+                fills.append((state["rgb"], polys))
+            subpaths, cur = [], None
+            stack = []
+        elif tok in ("n", "N"):
+            subpaths, cur = [], None
+            stack = []
+        elif tok == "S":
+            subpaths, cur = [], None
+            stack = []
+        elif tok in ("re", "rectclip"):
+            stack = []
+        else:
+            # 其余操作符（save/restore/showpage/end/dict/begin 等）忽略
+            if tok in ("showpage", "save", "restore", "end", "begin", "dict"):
+                stack = []
+    return bbox, fills
+
+
+# --------------------------------------------------------------------------
+# 光栅化
+# --------------------------------------------------------------------------
+def rasterize(bbox, fills, size=MASTER):
+    x0, y0, x1, y1 = bbox
+    aw, ah = x1 - x0, y1 - y0
+    scale = size * FILL / max(aw, ah)
+    offx = (size - aw * scale) / 2.0
+    offy = (size - ah * scale) / 2.0
+
+    buf = bytearray(size * size * 4)          # RGBA，初始全透明
+
+    def tx(p):
+        return (offx + (p[0] - x0) * scale,
+                offy + (y1 - p[1]) * scale)   # PostScript 的 y 轴朝上，这里翻转
+
+    for rgb, polys in fills:
+        r = max(0, min(255, int(round(rgb[0] * 255))))
+        g = max(0, min(255, int(round(rgb[1] * 255))))
+        b = max(0, min(255, int(round(rgb[2] * 255))))
+
+        edges = []
+        for poly in polys:
+            pts = [tx(p) for p in poly]
+            n = len(pts)
+            for i in range(n):
+                ax, ay = pts[i]
+                bx, by = pts[(i + 1) % n]
+                if ay != by:
+                    edges.append((ax, ay, bx, by))
+        if not edges:
+            continue
+
+        ymin = max(0, int(min(min(e[1], e[3]) for e in edges)))
+        ymax = min(size - 1, int(max(max(e[1], e[3]) for e in edges)) + 1)
+        for py in range(ymin, ymax + 1):
+            yc = py + 0.5
+            xs = []
+            for (ax, ay, bx, by) in edges:
+                if (ay <= yc < by) or (by <= yc < ay):
+                    t = (yc - ay) / (by - ay)
+                    xs.append((ax + t * (bx - ax), 1 if by > ay else -1))
+            if len(xs) < 2:
+                continue
+            xs.sort()
+            wind = 0
+            base = py * size * 4
+            for i in range(len(xs) - 1):
+                wind += xs[i][1]
+                if wind == 0:
+                    continue
+                pa = max(0, int(math.ceil(xs[i][0] - 0.5)))
+                pb = min(size - 1, int(math.floor(xs[i + 1][0] - 0.5)))
+                for px in range(pa, pb + 1):
+                    o = base + px * 4
+                    buf[o] = r
+                    buf[o + 1] = g
+                    buf[o + 2] = b
+                    buf[o + 3] = 255
+    return buf, size
+
+
+def halve(buf, n):
+    """面积平均降采样一半（n 必须是偶数）"""
+    m = n // 2
+    out = bytearray(m * m * 4)
+    for y in range(m):
+        r0 = (2 * y) * n * 4
+        r1 = (2 * y + 1) * n * 4
+        o = y * m * 4
+        for x in range(m):
+            a0 = r0 + 4 * x * 2
+            a1 = a0 + 4
+            b0 = r1 + 4 * x * 2
+            b1 = b0 + 4
+            for k in range(4):
+                out[o + 4 * x + k] = (buf[a0 + k] + buf[a1 + k]
+                                      + buf[b0 + k] + buf[b1 + k]) // 4
+    return out, m
+
+
+def resize_area(buf, src, dst):
+    """任意比例的面积平均（用于 64->48、32->24 这类非整数倍）"""
+    out = bytearray(dst * dst * 4)
+    k = src / float(dst)
+    for y in range(dst):
+        sy0 = int(y * k)
+        sy1 = max(sy0 + 1, int((y + 1) * k))
+        for x in range(dst):
+            sx0 = int(x * k)
+            sx1 = max(sx0 + 1, int((x + 1) * k))
+            acc = [0, 0, 0, 0]
+            cnt = 0
+            for sy in range(sy0, min(sy1, src)):
+                base = sy * src * 4
+                for sx in range(sx0, min(sx1, src)):
+                    o = base + sx * 4
+                    acc[0] += buf[o]
+                    acc[1] += buf[o + 1]
+                    acc[2] += buf[o + 2]
+                    acc[3] += buf[o + 3]
+                    cnt += 1
+            if cnt:
+                o = (y * dst + x) * 4
+                for i in range(4):
+                    out[o + i] = acc[i] // cnt
+    return out
+
+
+def build_ico(images):
+    """images: [(size, RGBA bytes 自上而下)]"""
+    blobs = []
+    for size, rgba in images:
+        rows = []
+        for y in range(size - 1, -1, -1):        # ICO 的 DIB 自下而上
+            rows.append(bytes(rgba[y * size * 4:(y + 1) * size * 4]))
+        xor = b"".join(rows)
+        and_mask = b"\x00" * (size * 4)
+        bih = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0,
+                          len(xor), 0, 0, 0, 0)
+        blobs.append(bih + xor + and_mask)
+    n = len(images)
+    header = struct.pack("<HHH", 0, 1, n)
+    offset = 6 + 16 * n
+    entries = b""
+    data = b""
+    for (size, _), blob in zip(images, blobs):
+        b = 0 if size >= 256 else size
+        entries += struct.pack("<BBBBHHII", b, b, 0, 0, 1, 32, len(blob), offset)
+        offset += len(blob)
+        data += blob
+    return header + entries + data
 
 
 def png_bytes(rgba, w, h):
@@ -64,11 +301,9 @@ def png_bytes(rgba, w, h):
             + chunk(b"IEND", b""))
 
 
-def compose(items, pad=12, bg=(0xF0, 0xF0, 0xF0)):
-    """items: [(size, rgba)]，横向排在一张浅灰底图上"""
+def compose(items, pad=14, bg=(0xF2, 0xF2, 0xF4)):
     cw = sum(s for s, _ in items) + pad * (len(items) + 1)
     ch = max(s for s, _ in items) + pad * 2
-    canvas = bytearray(list(bg) + [255] * 0) * 0
     canvas = bytearray((bytes(bg) + b"\xff") * (cw * ch))
     x = pad
     for size, img in items:
@@ -89,30 +324,63 @@ def compose(items, pad=12, bg=(0xF0, 0xF0, 0xF0)):
 
 
 def main():
-    ico_path = os.path.join(ROOT, "assets", "app.ico")
-    os.makedirs(os.path.dirname(ico_path), exist_ok=True)
-    live = ti.COLORS["live"]
-    with open(ico_path, "wb") as fh:
-        fh.write(ti.make_ico_file_multi(live))
-    print("已生成 %s (%d 字节)" % (ico_path, os.path.getsize(ico_path)))
+    if os.path.exists(EPS_PATH):
+        print("数据源: %s" % EPS_PATH)
+        bbox, fills = parse_eps(EPS_PATH)
+        print("  矢量填充块: %d 个（颜色 %s）"
+              % (len(fills), ["#%02X%02X%02X" % tuple(
+                  int(round(c * 255)) for c in rgb) for rgb, _ in fills]))
+        master, n = rasterize(bbox, fills, MASTER)
+        print("  已光栅化 %d x %d" % (n, n))
+    else:
+        print("未找到 %s，改用代码绘制的图形" % EPS_PATH)
+        live = ti.COLORS["live"]
+        master = None
+        n = 512
+        rgba = bytearray(n * n * 4)
+        for y in range(n):
+            for x in range(n):
+                u, v = (x + 0.5) / n, (y + 0.5) / n
+                dx, dy = u - 0.5, v - 0.5
+                if (dx * dx + dy * dy) ** 0.5 > 0.47:
+                    continue
+                o = (y * n + x) * 4
+                if ti._in_headset(u, v):
+                    rgba[o:o + 4] = b"\xff\xff\xff\xff"
+                else:
+                    rgba[o] = live[0]
+                    rgba[o + 1] = live[1]
+                    rgba[o + 2] = live[2]
+                    rgba[o + 3] = 255
+        master = rgba
 
-    img_dir = os.path.join(ROOT, "docs", "images")
-    os.makedirs(img_dir, exist_ok=True)
+    # 逐级折半，再按需做非整数倍缩放
+    levels = {n: master}
+    cur, cn = master, n
+    while cn > 16:
+        cur, cn = halve(cur, cn)
+        levels[cn] = cur
 
-    sizes = [16, 24, 32, 48, 64, 96, 128]
-    data, cw, ch = compose([(s, render_rgba(s, live, 4 if s <= 48 else 2))
-                            for s in sizes])
-    p1 = os.path.join(img_dir, "icon-preview.png")
-    with open(p1, "wb") as fh:
+    def get(target):
+        # 找到 >= target 的最小已有尺寸，再面积平均
+        src = min(k for k in levels if k >= target)
+        return resize_area(levels[src], src, target) if src != target \
+            else levels[src]
+
+    sizes = [16, 24, 32, 48, 64, 128, 256]
+    images = [(s, get(s)) for s in sizes]
+
+    os.makedirs(os.path.dirname(ICO_PATH), exist_ok=True)
+    with open(ICO_PATH, "wb") as fh:
+        fh.write(build_ico(images))
+    print("已生成 %s (%d 字节, %d 个尺寸)"
+          % (ICO_PATH, os.path.getsize(ICO_PATH), len(sizes)))
+
+    os.makedirs(IMG_DIR, exist_ok=True)
+    data, cw, ch = compose([(s, img) for s, img in images if s <= 128])
+    with open(os.path.join(IMG_DIR, "icon-preview.png"), "wb") as fh:
         fh.write(data)
-    print("已生成 %s (%d x %d)" % (p1, cw, ch))
-
-    data2, cw2, ch2 = compose([(64, render_rgba(64, c, 3))
-                               for c in ti.COLORS.values()])
-    p2 = os.path.join(img_dir, "icon-states.png")
-    with open(p2, "wb") as fh:
-        fh.write(data2)
-    print("已生成 %s (%d x %d)" % (p2, cw2, ch2))
+    print("已生成 icon-preview.png (%d x %d)" % (cw, ch))
 
 
 if __name__ == "__main__":

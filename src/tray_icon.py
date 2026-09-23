@@ -13,7 +13,9 @@
     tray.remove()
 """
 import ctypes
+import os
 import struct
+import sys
 from ctypes import wintypes as w
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -46,6 +48,74 @@ HWND_MESSAGE = -3
 LR_DEFAULTCOLOR = 0x0000
 IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x0010
+SM_CXSMICON = 49
+DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+
+user32.LoadImageW.restype = w.HANDLE
+user32.LoadImageW.argtypes = [w.HANDLE, w.LPCWSTR, w.UINT, ctypes.c_int,
+                              ctypes.c_int, w.UINT]
+user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+try:
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+except AttributeError:
+    pass
+
+
+def asset_dir():
+    """assets 目录：打包后在 PyInstaller 的解包目录里，源码运行时在项目根目录"""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return os.path.join(base, "assets")
+    return os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "assets")
+
+
+def default_icon_path():
+    return os.path.join(asset_dir(), "app.ico")
+
+
+def small_icon_size():
+    """系统托盘小图标的真实像素尺寸。
+
+    本进程是 DPI 不感知的，GetSystemMetrics 会被虚拟化（缩放 125% 时只返回 16，
+    实际需要 20）。这里临时把当前线程切成 DPI 感知取一次真实值，取完立刻还原，
+    不影响 tkinter。
+    """
+    ctx = None
+    try:
+        ctx = user32.SetThreadDpiAwarenessContext(
+            ctypes.c_void_p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+    except Exception:
+        ctx = None
+    try:
+        s = user32.GetSystemMetrics(SM_CXSMICON) or 16
+    except Exception:
+        s = 16
+    finally:
+        if ctx:
+            try:
+                user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(ctx))
+            except Exception:
+                pass
+    return max(16, min(int(s), 64))
+
+
+def load_icon_file(path, size=None):
+    """从 .ico 文件装载 HICON（按系统实际尺寸，避免缩放发虚）"""
+    if not path or not os.path.exists(path):
+        return None
+    if size is None:
+        size = small_icon_size()
+    for flag_size in (size, 0):
+        try:
+            h = user32.LoadImageW(None, path, IMAGE_ICON, flag_size, flag_size,
+                                  LR_LOADFROMFILE)
+            if h:
+                return h
+        except Exception:
+            pass
+    return None
 
 # 状态配色（RGB）
 COLORS = {
@@ -268,7 +338,7 @@ class TrayIcon:
     _class_registered = False
 
     def __init__(self, tooltip="", on_activate=None, build_menu=None,
-                 on_command=None, uid=1):
+                 on_command=None, uid=1, icon_file=None):
         self.tooltip = tooltip[:127]
         self.on_activate = on_activate
         self.build_menu = build_menu
@@ -279,22 +349,32 @@ class TrayIcon:
         self.available = False
         self.hwnd = None
         self._hicon_owned = set()
+        self.file_icon = None
 
         self._create_window()
-        for name, rgb in COLORS.items():
-            try:
-                ic = load_icon_from_image(make_icon_image(32, rgb))
+
+        # 优先用 assets/app.ico（由用户的矢量设计稿光栅化而来）
+        path = icon_file if icon_file is not None else default_icon_path()
+        self.file_icon = load_icon_file(path)
+        if self.file_icon:
+            self._hicon_owned.add(self.file_icon)
+            self.hicon = self.file_icon
+
+        if not self.file_icon:
+            # 退路：用代码画的图形，并按状态换颜色
+            for name, rgb in COLORS.items():
+                try:
+                    ic = load_icon_from_image(make_icon_image(32, rgb))
+                    if ic:
+                        self.icons[name] = ic
+                        self._hicon_owned.add(ic)
+                except Exception:
+                    pass
+            if not self.icons:
+                ic = user32.LoadIconW(None, ctypes.c_wchar_p(32512))
                 if ic:
-                    self.icons[name] = ic
-                    self._hicon_owned.add(ic)
-            except Exception:
-                pass
-        if not self.icons:
-            # 兜底：用系统默认图标
-            ic = user32.LoadIconW(None, ctypes.c_wchar_p(32512))   # IDI_APPLICATION
-            if ic:
-                self.icons["idle"] = ic
-        self.hicon = self.icons.get("idle")
+                    self.icons["idle"] = ic
+            self.hicon = self.icons.get("idle")
 
         self.nid = NOTIFYICONDATAW()
         self.nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
@@ -387,10 +467,10 @@ class TrayIcon:
             n += 1
 
     def set_state(self, state, tooltip=None):
-        """切换图标配色与提示文字"""
+        """切换提示文字（若没有 app.ico，则同时切换程序化图标的配色）"""
         if tooltip is not None:
             self.tooltip = tooltip[:127]
-        new_icon = self.icons.get(state) or self.hicon
+        new_icon = self.file_icon or self.icons.get(state) or self.hicon
         if not self.available:
             return
         self.nid.uFlags = NIF_ICON | NIF_TIP
