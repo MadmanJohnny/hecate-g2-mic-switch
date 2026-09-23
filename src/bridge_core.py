@@ -38,6 +38,7 @@ DEFAULT_CONFIG = {
     "start_dictating": False,
     "log_to_file": True,
     "autostart_bridge": False,       # 开机自动开始桥接
+    "close_to_tray": True,           # 点关闭按钮时收进系统托盘而不是退出
 }
 
 # ---------------------------------------------------------------- 基础常量

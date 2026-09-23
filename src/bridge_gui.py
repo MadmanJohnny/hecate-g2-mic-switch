@@ -13,6 +13,7 @@ from tkinter import messagebox, scrolledtext, ttk
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bridge_core as core  # noqa: E402
+import tray_icon  # noqa: E402
 
 APP_TITLE = "HECATE G2 麦克风开关 → 输入法语音输入"
 HOTKEY_PRESETS = ["ctrl+win", "ctrl+alt+space", "ctrl+alt+v", "ralt",
@@ -53,6 +54,11 @@ HELP_TEXT = """【它是怎么工作的】
   2. 在任意输入框里，把线控开关拨到「麦克风开」→ 自动开始语音输入；
      拨到「静音」→ 自动停止。（先拨哪边都不会出错）
   3. 想让每次开机自动生效，勾选设置页里的「开机自动启动」。
+  4. 点窗口右上角的关闭按钮，程序会收进任务栏右下角的托盘小图标继续运行，
+     不会退出；托盘图标左键单击可重新打开窗口，右键菜单里有「退出」。
+
+  托盘图标颜色代表状态：灰色=未启动，蓝色=运行中待命，绿色=正在录音，
+  红色=出错。鼠标悬停可以看到当前状态。
 
 【要注意的事】
 
@@ -85,6 +91,9 @@ class BridgeGUI:
         self._mutex = None
         self._live = {"on": False, "until": 0}
         self._log_file = None
+        self._tray = None
+        self._tray_hint_shown = False
+        self._alive = True
         self._open_log_file()
 
         root.title(APP_TITLE)
@@ -93,6 +102,7 @@ class BridgeGUI:
 
         self._build_ui()
         self._refresh_device_lists()
+        self._setup_tray()
         self._refresh_state(self.bridge.snapshot())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -101,7 +111,82 @@ class BridgeGUI:
             root.after(400, self.start_bridge)
         if minimized:
             self.start_bridge()
-            root.iconify()
+            self._hide_to_tray(silent=True)
+
+    # ------------------------------------------------------------ 系统托盘
+    def _setup_tray(self):
+        try:
+            self._tray = tray_icon.TrayIcon(
+                tooltip=APP_TITLE,
+                on_activate=self._show_window,
+                build_menu=self._tray_menu,
+                on_command=self._tray_command,
+            )
+            if self._tray.available:
+                self._append_log("系统托盘图标已就绪（左键打开窗口，右键操作菜单）")
+            else:
+                self._append_log("托盘图标注册失败，关闭窗口将直接退出。")
+                self._tray = None
+        except Exception as exc:
+            self._append_log("托盘图标初始化失败：%r" % exc)
+            self._tray = None
+        self._pump_tray()
+
+    def _pump_tray(self):
+        if self._tray is not None:
+            try:
+                self._tray.pump()
+            except Exception:
+                pass
+        if self._alive:
+            try:
+                self.root.after(60, self._pump_tray)
+            except Exception:
+                pass
+
+    def _show_window(self):
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+            self.root.after(220, lambda: self.root.attributes("-topmost", False))
+            self.root.focus_force()
+        except Exception:
+            pass
+
+    def _hide_to_tray(self, silent=False):
+        try:
+            self.root.withdraw()
+        except Exception:
+            pass
+        if not silent and not self._tray_hint_shown:
+            self._tray_hint_shown = True
+            try:
+                self._tray.notify("仍在后台运行",
+                                  "程序已最小化到托盘，语音输入控制继续有效。\n"
+                                  "双击托盘图标可重新打开，右键可退出。")
+            except Exception:
+                pass
+        self._append_log("窗口已隐藏到托盘（程序继续在后台运行）。")
+
+    def _tray_menu(self):
+        s = self.bridge.snapshot()
+        items = [(1, "显示主界面"), None]
+        items.append((2, "停止桥接") if s["running"] else (2, "开始桥接"))
+        items.append(None)
+        items.append((9, "退出（停止语音输入控制）"))
+        return items
+
+    def _tray_command(self, cid):
+        if cid == 1:
+            self._show_window()
+        elif cid == 2:
+            if self.bridge.running:
+                self.stop_bridge()
+            else:
+                self.start_bridge()
+        elif cid == 9:
+            self._quit_app(confirm=False)
 
     # ------------------------------------------------------------ 日志
     def _open_log_file(self):
@@ -258,8 +343,12 @@ class BridgeGUI:
         self.var_startdict = tk.BooleanVar(value=self.cfg.get("start_dictating", False))
         self.var_autostart = tk.BooleanVar(value=core.autostart_installed())
         self.var_autobridge = tk.BooleanVar(value=self.cfg.get("autostart_bridge", False))
+        self.var_tray = tk.BooleanVar(value=self.cfg.get("close_to_tray", True))
         ttk.Checkbutton(g3, text="程序启动时若麦克风已经是开的，立即开始语音输入",
                         variable=self.var_startdict).pack(anchor="w", padx=10, pady=3)
+        ttk.Checkbutton(g3, text="点击关闭按钮时最小化到托盘，不退出程序"
+                                 "（程序常驻任务栏右下角小图标）",
+                        variable=self.var_tray).pack(anchor="w", padx=10, pady=3)
         ttk.Checkbutton(g3, text="开机自动启动本程序（在启动文件夹创建快捷方式）",
                         variable=self.var_autostart).pack(anchor="w", padx=10, pady=3)
         ttk.Checkbutton(g3, text="程序启动后自动开始桥接（配合开机自启）",
@@ -402,6 +491,31 @@ class BridgeGUI:
         if s["error"]:
             self.lbl_hint.configure(text="⚠ %s" % s["error"], foreground="#c92a2a")
         self._draw_level()
+        self._update_tray(s)
+
+    def _update_tray(self, s):
+        """让托盘图标的配色与提示跟随状态（只在变化时调用 Shell_NotifyIcon）"""
+        if self._tray is None or not self._tray.available:
+            return
+        if s.get("error"):
+            state = "error"
+        elif not s["running"]:
+            state = "idle"
+        elif s["voice_on"]:
+            state = "live"
+        else:
+            state = "ready"
+        tip = "%s\n状态：%s\n麦克风：%s" % (
+            APP_TITLE,
+            "未启动" if not s["running"] else ("录音中" if s["voice_on"] else "待命"),
+            "静音" if s["mic_muted"] else "开")
+        if getattr(self, "_tray_last", None) == (state, tip):
+            return
+        self._tray_last = (state, tip)
+        try:
+            self._tray.set_state(state, tip)
+        except Exception:
+            pass
 
     def _refresh_level(self, st):
         self.bridge.last_peak = st["peak"]
@@ -460,6 +574,7 @@ class BridgeGUI:
         self.cfg["capture_device"] = self._cap_map.get(self.var_cap.get(), "")
         self.cfg["start_dictating"] = bool(self.var_startdict.get())
         self.cfg["autostart_bridge"] = bool(self.var_autobridge.get())
+        self.cfg["close_to_tray"] = bool(self.var_tray.get())
         core.save_config(self.cfg)
         self.bridge.cfg = self.cfg
         self.bridge._probe = core.MicProbe(self.cfg["probe_ms"],
@@ -491,6 +606,7 @@ class BridgeGUI:
         self.var_debounce.set(self.cfg["debounce_ms"])
         self.var_startdict.set(self.cfg["start_dictating"])
         self.var_autobridge.set(self.cfg["autostart_bridge"])
+        self.var_tray.set(self.cfg.get("close_to_tray", True))
         self._refresh_device_lists()
         self.bridge.cfg = self.cfg
 
@@ -567,25 +683,54 @@ class BridgeGUI:
                             "已尝试松开所有快捷键。" if ok else "松开失败，请手动按一下左 Ctrl 和左 Win 键。")
 
     def on_close(self):
+        """点窗口的关闭按钮：按设置决定"收进托盘"还是"直接退出" """
+        if (self.cfg.get("close_to_tray", True)
+                and self._tray is not None and self._tray.available):
+            self._hide_to_tray()
+            return
+        self._quit_app(confirm=True)
+
+    def _quit_app(self, confirm=False):
+        """真正退出：停桥接、松按键、撤掉托盘图标"""
+        if confirm:
+            try:
+                if self.bridge.running and not messagebox.askokcancel(
+                        "退出", "桥接正在运行，退出会停止语音输入控制。确定退出？"):
+                    return
+            except Exception:
+                pass
+        self._alive = False
+        self._live["on"] = False
         try:
-            if self.bridge.running and not messagebox.askokcancel(
-                    "退出", "桥接正在运行，退出会停止语音输入控制。确定退出？"):
-                return
+            self.bridge.stop()
         except Exception:
             pass
-        self._live["on"] = False
-        self.bridge.stop()
+        try:
+            self.bridge.release_keys()
+        except Exception:
+            pass
+        if self._tray is not None:
+            try:
+                self._tray.remove()
+            except Exception:
+                pass
+            self._tray = None
         if self._mutex:
             try:
                 core.kernel32.CloseHandle(self._mutex)
             except Exception:
                 pass
+            self._mutex = None
         if self._log_file:
             try:
                 self._log_file.close()
             except Exception:
                 pass
-        self.root.destroy()
+            self._log_file = None
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
 
 def cli_mode(argv):
