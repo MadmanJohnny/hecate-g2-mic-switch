@@ -154,6 +154,82 @@ def parse_eps(path):
 
 
 # --------------------------------------------------------------------------
+# 把设计稿中间的「圆形播放按钮」换成扁平麦克风
+#   EPS 里播放按钮由三组填充构成：橙红圆盘+三角、深蓝圆环、深蓝三角描边。
+#   它们的包围盒都落在下面这个区域内，据此整组剔除，再补上新画的麦克风。
+# --------------------------------------------------------------------------
+PLAY_BOX = (200.0, 225.0, 570.0, 590.0)      # 播放按钮所在区域（EPS 用户坐标）
+NAVY = (0.0941176, 0.145098, 0.184314)
+SALMON = (1.0, 0.533333, 0.458824)
+
+
+def _mic_body(cx, cy, grow, steps=28):
+    """话筒本体：竖直胶囊"""
+    r = 50 + grow
+    y0, y1 = cy - 12 - grow, cy + 168 + grow
+    pts = []
+    for i in range(steps + 1):                       # 下半圆
+        a = math.pi + math.pi * i / steps
+        pts.append((cx + r * math.cos(a), (y0 + r) + r * math.sin(a)))
+    for i in range(steps + 1):                       # 上半圆
+        a = math.pi * i / steps
+        pts.append((cx + r * math.cos(a), (y1 - r) + r * math.sin(a)))
+    return pts
+
+
+def _mic_arc(cx, cy, grow, steps=30):
+    """话筒支架：下方的一段圆环（要够粗，否则小尺寸下看不见）"""
+    ro, ri = 126 + grow, 78 - grow
+    ccy = cy + 48
+    a0, a1 = math.radians(200), math.radians(340)
+    pts = []
+    for i in range(steps + 1):
+        a = a0 + (a1 - a0) * i / steps
+        pts.append((cx + ro * math.cos(a), ccy + ro * math.sin(a)))
+    for i in range(steps, -1, -1):
+        a = a0 + (a1 - a0) * i / steps
+        pts.append((cx + ri * math.cos(a), ccy + ri * math.sin(a)))
+    return pts
+
+
+def _rect(cx, _cy, hw, y0, y1, grow=0.0):
+    return [(cx - hw - grow, y0 - grow), (cx + hw + grow, y0 - grow),
+            (cx + hw + grow, y1 + grow), (cx - hw - grow, y1 + grow)]
+
+
+def replace_play_button(fills, cx=None, cy=None):
+    """剔除播放按钮的图形，换成深蓝描边 + 橙红填充的扁平麦克风"""
+    kept, removed_box = [], []
+    for rgb, polys in fills:
+        xs = [p[0] for poly in polys for p in poly]
+        ys = [p[1] for poly in polys for p in poly]
+        if xs and min(xs) >= PLAY_BOX[0] and max(xs) <= PLAY_BOX[2] \
+                and min(ys) >= PLAY_BOX[1] and max(ys) <= PLAY_BOX[3]:
+            removed_box.append((min(xs), min(ys), max(xs), max(ys)))
+            continue
+        kept.append((rgb, polys))
+
+    if removed_box:
+        if cx is None:
+            cx = (min(b[0] for b in removed_box) + max(b[2] for b in removed_box)) / 2.0
+        if cy is None:
+            cy = (min(b[1] for b in removed_box) + max(b[3] for b in removed_box)) / 2.0
+    cx = 381.6 if cx is None else cx
+    cy = 403.9 if cy is None else cy
+    print("  移除播放按钮图形 %d 组，在 (%.1f, %.1f) 处换成扁平麦克风"
+          % (len(removed_box), cx, cy))
+
+    # 先铺深蓝（放大 9 个单位当描边），再盖橙红填充。
+    # 每个部件单独成一组，避免同一填充内多边形的环绕方向互相抵消。
+    for grow, color in ((9.0, NAVY), (0.0, SALMON)):
+        for poly in (_mic_body(cx, cy, grow), _mic_arc(cx, cy, grow),
+                     _rect(cx, cy, 20, cy - 112, cy - 30, grow),
+                     _rect(cx, cy, 86, cy - 142, cy - 100, grow)):
+            kept.append((color, [poly]))
+    return kept
+
+
+# --------------------------------------------------------------------------
 # 光栅化
 # --------------------------------------------------------------------------
 def rasterize(bbox, fills, size=MASTER):
@@ -263,12 +339,20 @@ def resize_area(buf, src, dst):
 
 
 def build_ico(images):
-    """images: [(size, RGBA bytes 自上而下)]"""
+    """images: [(size, RGBA bytes 自上而下)] -> .ico 文件字节
+
+    注意：ICO 内的 DIB 是 **BGRA** 顺序且自下而上，而这里内部一律用 RGBA，
+    所以要在这里换序，否则红蓝通道会对调。
+    """
     blobs = []
     for size, rgba in images:
         rows = []
-        for y in range(size - 1, -1, -1):        # ICO 的 DIB 自下而上
-            rows.append(bytes(rgba[y * size * 4:(y + 1) * size * 4]))
+        for y in range(size - 1, -1, -1):        # 自下而上
+            row = bytearray()
+            for x in range(size):
+                o = (y * size + x) * 4
+                row += bytes((rgba[o + 2], rgba[o + 1], rgba[o], rgba[o + 3]))
+            rows.append(bytes(row))
         xor = b"".join(rows)
         and_mask = b"\x00" * (size * 4)
         bih = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0,
@@ -330,6 +414,7 @@ def main():
         print("  矢量填充块: %d 个（颜色 %s）"
               % (len(fills), ["#%02X%02X%02X" % tuple(
                   int(round(c * 255)) for c in rgb) for rgb, _ in fills]))
+        fills = replace_play_button(fills)
         master, n = rasterize(bbox, fills, MASTER)
         print("  已光栅化 %d x %d" % (n, n))
     else:
