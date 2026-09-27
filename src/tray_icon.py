@@ -70,6 +70,63 @@ except AttributeError:
 WM_SETICON = 0x0080
 ICON_SMALL, ICON_BIG, ICON_SMALL2 = 0, 1, 2
 
+LOGPIXELSY = 90
+gdi32.GetDeviceCaps.argtypes = [w.HANDLE, ctypes.c_int]
+gdi32.GetDeviceCaps.restype = ctypes.c_int
+user32.GetDC.restype = w.HANDLE
+user32.GetDC.argtypes = [w.HANDLE]
+user32.ReleaseDC.argtypes = [w.HANDLE, w.HANDLE]
+try:
+    user32.GetDpiForSystem.restype = w.UINT
+    user32.GetDpiForSystem.argtypes = []
+    user32.SetProcessDpiAwarenessContext.restype = w.BOOL
+    user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+except AttributeError:
+    pass
+try:
+    shcore = ctypes.WinDLL("shcore", use_last_error=True)
+except OSError:
+    shcore = None
+
+
+def enable_dpi_awareness():
+    """声明进程 DPI 感知，返回是否成功。
+
+    这一步决定界面清晰与否。不声明时 Windows 会把整个窗口当成 96 DPI 的应用
+    渲染，再整体位图放大（125% 缩放就是放大 1.25 倍），于是标题栏、文字、图标
+    全是拉伸出来的，比原生渲染的程序明显发虚。
+    必须在创建任何窗口之前调用，之后调用无效。
+    """
+    try:
+        if user32.SetProcessDpiAwarenessContext(
+                ctypes.c_void_p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)):
+            return True
+    except Exception:
+        pass
+    try:
+        if shcore and shcore.SetProcessDpiAwareness(2) == 0:   # PER_MONITOR_DPI_AWARE
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def system_scale():
+    """系统缩放倍数（96 DPI = 1.0）"""
+    dpi = 0
+    try:
+        dpi = user32.GetDpiForSystem() or 0
+    except Exception:
+        dpi = 0
+    if not dpi:
+        try:
+            hdc = user32.GetDC(None)
+            dpi = gdi32.GetDeviceCaps(hdc, LOGPIXELSY) or 0
+            user32.ReleaseDC(None, hdc)
+        except Exception:
+            dpi = 0
+    return (dpi / 96.0) if dpi else 1.0
+
 
 def asset_dir():
     """assets 目录：打包后在 PyInstaller 的解包目录里，源码运行时在项目根目录"""
@@ -163,17 +220,20 @@ def load_icon_from_exe(size=None):
 
 
 def set_window_icon(hwnd, path=None, small=None, big=None):
-    """给窗口设置小/大图标。
+    """给窗口设置小（标题栏）/ 大（任务栏、Alt+Tab）图标。
 
     不设的话，标题栏和任务栏会显示 Tk 窗口类自带的默认图标（一根羽毛）。
     返回保持引用的 HICON 列表（调用方必须留着，否则句柄被回收图标会失效）。
+
+    注意：**不要**顺手去设 ICON_SMALL2(2)。实测在本环境里设完 ICON_BIG=40px 之后，
+    再发一次 ICON_SMALL2 会让 WM_GETICON(ICON_BIG) 退回 20px —— 等于把大图标
+    打回小图标，任务栏那一格就只能拿 20px 去放大，于是发虚。
     """
     path = path or default_icon_path()
     small = small or small_icon_size()
     big = big or large_icon_size()
     keep = []
-    for idx, size in ((ICON_SMALL, small), (ICON_BIG, big),
-                      (ICON_SMALL2, small)):
+    for idx, size in ((ICON_SMALL, small), (ICON_BIG, big)):
         h = load_icon_file(path, size) or load_icon_from_exe(size)
         if h:
             keep.append(h)

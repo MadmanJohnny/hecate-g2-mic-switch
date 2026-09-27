@@ -7,8 +7,8 @@
     2. 找不到设计稿时，退回用 src/tray_icon.py 里代码画的图形
 
 生成：
-    assets/app.ico                 exe 与系统托盘图标（16/24/32/48/64/128/256）
-    docs/images/icon-preview.png   各尺寸预览图
+    assets/app.ico                  exe / 托盘 / 标题栏图标
+    docs/images/icon-preview.png    各尺寸预览图
 
 用法：
     python tools/make_icons.py
@@ -25,7 +25,16 @@ import tray_icon as ti  # noqa: E402
 PNG_SRC = os.path.join(ROOT, "assets", "app-ICON.png")
 ICO_PATH = os.path.join(ROOT, "assets", "app.ico")
 IMG_DIR = os.path.join(ROOT, "docs", "images")
-SIZES = [16, 24, 32, 48, 64, 128, 256]
+
+# ICO 必须覆盖系统在各档缩放下真正会请求的尺寸，缺一个 GDI 就会拿邻近尺寸拉伸，
+# 结果就是发虚。各缩放档下系统要的「小图标 / 大图标」尺寸：
+#   100% -> 16 / 32    125% -> 20 / 40    150% -> 24 / 48
+#   175% -> 28 / 56    200% -> 32 / 64
+# 所以这里把 20、28、40、56、96 这些「非 2 的幂」的尺寸也一并做进去。
+SIZES = [16, 20, 24, 28, 32, 40, 48, 56, 64, 96, 128, 256]
+
+# 预览图只挑几种有代表性的
+PREVIEW_SIZES = [16, 20, 24, 32, 40, 48, 64, 96, 128]
 
 
 # --------------------------------------------------------------------------
@@ -284,24 +293,16 @@ def main():
         master_n = 512
         master = render_fallback(master_n)
 
-    # 先面积平均到一个好处理的基准尺寸，再逐级折半
+    # 先把母版面积平均到一个好处理的基准尺寸；每个目标尺寸都独立从它按面积平均得到，
+    # 这样每个尺寸都是一次高质量降采样的结果，而不是「先缩再用 GDI 拉伸」
     base = 512 if master_n > 512 else master_n
-    levels = {master_n: master}
-    cur = resize_area(master, master_n, base) if base != master_n else master
-    levels[base] = cur
-    n = base
-    while n > 16:
-        cur = halve(cur, n)
-        n //= 2
-        levels[n] = cur
+    base_img = resize_area(master, master_n, base) if base != master_n else master
 
     def get(target):
-        if target in levels:
-            return levels[target]
-        src = min(k for k in levels if k >= target)
-        return resize_area(levels[src], src, target)
+        return resize_area(base_img, base, target)
 
     images = [(s, get(s)) for s in SIZES]
+    by_size = dict(images)
 
     os.makedirs(os.path.dirname(ICO_PATH), exist_ok=True)
     with open(ICO_PATH, "wb") as fh:
@@ -311,7 +312,7 @@ def main():
              "/".join(str(s) for s in SIZES)))
 
     os.makedirs(IMG_DIR, exist_ok=True)
-    data, cw, ch = compose([(s, img) for s, img in images if s <= 128])
+    data, cw, ch = compose([(s, by_size[s]) for s in PREVIEW_SIZES])
     with open(os.path.join(IMG_DIR, "icon-preview.png"), "wb") as fh:
         fh.write(data)
     print("已生成 icon-preview.png (%d x %d)" % (cw, ch))

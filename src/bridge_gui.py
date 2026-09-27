@@ -77,8 +77,9 @@ HELP_TEXT = """【它是怎么工作的】
 
 
 class BridgeGUI:
-    def __init__(self, root, minimized=False):
+    def __init__(self, root, minimized=False, ui_scale=1.0):
         self.root = root
+        self.ui_scale = ui_scale
         self.cfg = core.load_config()
         self.bridge = core.Bridge(
             self.cfg,
@@ -95,8 +96,8 @@ class BridgeGUI:
         self._open_log_file()
 
         root.title(APP_TITLE)
-        root.geometry("840x660")
-        root.minsize(760, 540)
+        root.geometry("%dx%d" % (self.px(840), self.px(660)))
+        root.minsize(self.px(760), self.px(540))
 
         self._build_ui()
         self._refresh_device_lists()
@@ -116,6 +117,14 @@ class BridgeGUI:
             self._hide_to_tray(silent=True)
 
     # ------------------------------------------------------------ 系统托盘
+    def px(self, n):
+        """把逻辑像素换算成当前 DPI 下的物理像素。
+
+        声明 DPI 感知后系统不再拉伸窗口，所以几何尺寸要自己按缩放比放大，
+        否则界面会比原来小一圈。
+        """
+        return int(round(n * self.ui_scale))
+
     def _apply_window_icon(self):
         """把窗口（标题栏 + 任务栏）图标设成我们自己的。
 
@@ -289,7 +298,7 @@ class BridgeGUI:
 
         lv = ttk.LabelFrame(f, text="麦克风电平（实时可视化，用来判断开关位置）")
         lv.pack(fill="x", padx=10, pady=6)
-        self.canvas = tk.Canvas(lv, height=54, bg="white",
+        self.canvas = tk.Canvas(lv, height=self.px(54), bg="white",
                                 highlightthickness=1, highlightbackground="#cccccc")
         self.canvas.pack(fill="x", padx=12, pady=10)
         self.canvas.bind("<Configure>", lambda e: self._draw_level())
@@ -878,12 +887,21 @@ def main():
         if flag in sys.argv:
             return cli_mode([a for a in sys.argv[1:] if a != "--minimized"])
     minimized = "--minimized" in sys.argv
+
+    # 必须在建立任何窗口之前声明，之后再调是不生效的
+    aware = tray_icon.enable_dpi_awareness()
+    scale = tray_icon.system_scale() if aware else 1.0
+
     root = tk.Tk()
+    # 原来写死 1.2 是为了在缩放屏上别显太小。现在：
+    #   感知成功 -> 系统不再拉伸窗口，字号靠 tk scaling 放大到同样的观感
+    #              （1.2 × 缩放比），配合下面的几何放大，观感与原来一致但清晰
+    #   感知失败 -> 保持原样，仍旧交给系统去拉伸
     try:
-        root.call("tk", "scaling", 1.2)
+        root.call("tk", "scaling", 1.2 * scale)
     except Exception:
         pass
-    BridgeGUI(root, minimized=minimized)
+    BridgeGUI(root, minimized=minimized, ui_scale=scale)
     root.mainloop()
     return 0
 
