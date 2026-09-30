@@ -80,12 +80,14 @@ class BridgeGUI:
     def __init__(self, root, minimized=False, ui_scale=1.0):
         self.root = root
         self.ui_scale = ui_scale
+        self.minimized = minimized
         self.cfg = core.load_config()
         self.bridge = core.Bridge(
             self.cfg,
             on_log=lambda m: self.root.after(0, self._append_log, m),
             on_state=lambda s: self.root.after(0, self._refresh_state, s),
             on_level=lambda st: self.root.after(0, self._refresh_level, st),
+            on_warn=lambda m: self.root.after(0, self._show_privilege_warning, m),
         )
         self._mutex = None
         self._live = {"on": False, "until": 0}
@@ -93,6 +95,7 @@ class BridgeGUI:
         self._tray = None
         self._tray_hint_shown = False
         self._alive = True
+        self._priv_warned = False
         self._open_log_file()
 
         root.title(APP_TITLE)
@@ -124,6 +127,51 @@ class BridgeGUI:
         否则界面会比原来小一圈。
         """
         return int(round(n * self.ui_scale))
+
+    def relaunch_elevated(self):
+        """以管理员身份重新启动自己。
+
+        以管理员身份运行的程序（手动用管理员启动的 Trae / WorkBuddy 等）所在的窗口
+        属于高完整性进程，普通权限进程注入的按键会被 Windows 的 UIPI **静默丢弃**，
+        表现就是"手动按快捷键有效、拨开关没反应"。提权后即可正常注入。
+        """
+        args = ["--minimized"] if self.minimized else []
+        if not messagebox.askyesno(
+                "以管理员身份重启",
+                "将关闭当前程序并以管理员身份重新启动（会弹一次 UAC 确认）。\n\n"
+                "在管理员实例里，以管理员身份运行的程序也能正常控制语音输入。\n\n"
+                "现在继续吗？"):
+            return
+        self._append_log("正在以管理员身份重启…")
+        # 先安全收尾：停桥接、松开按键，并释放单实例锁，避免新实例被挡掉
+        try:
+            self.bridge.stop()
+        except Exception:
+            pass
+        try:
+            self.bridge.release_keys()
+        except Exception:
+            pass
+        try:
+            if self._tray:
+                self._tray.remove()
+        except Exception:
+            pass
+        try:
+            if self._mutex:
+                core.kernel32.CloseHandle(self._mutex)
+                self._mutex = None
+        except Exception:
+            pass
+        ok, err = core.relaunch_elevated(args)
+        if not ok:
+            messagebox.showerror("提权失败",
+                                 "没能以管理员身份启动：\n%s\n\n"
+                                 "可以手动右键本程序 →「以管理员身份运行」。" % err)
+            self._append_log("提权失败：%s" % err)
+            return
+        self._alive = False
+        self._quit_app(confirm=False)
 
     def _apply_window_icon(self):
         """把窗口（标题栏 + 任务栏）图标设成我们自己的。
@@ -248,6 +296,40 @@ class BridgeGUI:
             self.txt_log.configure(state="disabled")
         except Exception:
             pass
+
+    def _show_privilege_warning(self, msg):
+        """桥接发现"目标程序是管理员、自己是普通权限"时的提示。
+
+        这种失败是**静默**的：SendInput 照样返回成功，只是按键被系统丢掉了，
+        所以必须在界面上说清楚，否则用户只会觉得"没反应"。
+        """
+        self._append_log(msg)
+        try:
+            if hasattr(self, "lbl_priv"):
+                self.lbl_priv.configure(
+                    text="⚠ 目标程序以管理员身份运行，本工具权限不足，按键送不进去。"
+                         "点下面的「以管理员身份重启」即可解决。",
+                    foreground="#b00020")
+        except Exception:
+            pass
+        if not self._priv_warned:
+            self._priv_warned = True
+            try:
+                self.root.deiconify()
+                self.root.lift()
+            except Exception:
+                pass
+            try:
+                messagebox.showwarning(
+                    "权限不足：按键送不进目标程序",
+                    "检测到前台程序是以**管理员身份**运行的，而本工具是普通权限。\n\n"
+                    "Windows 的 UIPI 规定：低权限进程的合成按键不能投递给高权限窗口，"
+                    "会被系统静默丢弃——所以你手动按快捷键有效，拨开关却没反应。\n\n"
+                    "解决办法（二选一）：\n"
+                    "  1. 点「设置 → 权限」里的「以管理员身份重启」\n"
+                    "  2. 不用管理员身份运行那个程序")
+            except Exception:
+                pass
 
     # ------------------------------------------------------------ 界面
     def _build_ui(self):
@@ -390,6 +472,29 @@ class BridgeGUI:
                         variable=self.var_autostart).pack(anchor="w", padx=10, pady=3)
         ttk.Checkbutton(g3, text="程序启动后自动开始桥接（配合开机自启）",
                         variable=self.var_autobridge).pack(anchor="w", padx=10, pady=3)
+
+        # ---- 权限：关系到能不能往管理员程序里注入按键（Windows UIPI 限制）
+        g4 = ttk.LabelFrame(f, text="权限")
+        g4.pack(fill="x", **pad)
+        elevated = core.current_is_elevated()
+        self.lbl_priv = ttk.Label(
+            g4,
+            text=("当前：管理员权限 ✓  —— 普通程序和以管理员身份运行的程序都能控制"
+                  if elevated else
+                  "当前：普通权限  —— 以管理员身份运行的程序（如手动用管理员启动的 "
+                  "Trae / WorkBuddy）收不到本工具的按键，需要提权"),
+            wraplength=self.px(700), justify="left")
+        self.lbl_priv.pack(anchor="w", padx=10, pady=(6, 2))
+        rp = ttk.Frame(g4)
+        rp.pack(fill="x", padx=10, pady=(2, 8))
+        self.btn_elevate = ttk.Button(rp, text="以管理员身份重启",
+                                      command=self.relaunch_elevated)
+        self.btn_elevate.pack(side="left")
+        if elevated:
+            self.btn_elevate.state(["disabled"])
+        ttk.Label(rp, text="  会弹一次 UAC 确认。以管理员身份后再勾选开机自启并保存，"
+                           "会改用最高权限的计划任务，之后开机不再弹 UAC。").pack(
+            side="left")
 
         r = ttk.Frame(f); r.pack(fill="x", padx=10, pady=10)
         ttk.Button(r, text="保存设置", command=self.save_config).pack(side="left")
@@ -843,6 +948,19 @@ def selftest():
     cfg = core.load_config()
     lines.append("hotkey=%s threshold=%s" % (cfg.get("hotkey"),
                                              cfg.get("mute_peak_threshold")))
+    # 权限：关系到能不能把按键注入到"以管理员身份运行"的程序里（UIPI）
+    try:
+        elevated = core.current_is_elevated()
+        lines.append("elevated=%s" % elevated)
+        pid, name, target_elev = core.foreground_process()
+        lines.append("foreground=%s pid=%s elevated=%s" % (name or "?",
+                                                           pid, target_elev))
+        blocked, who = core.uipi_blocks_injection()
+        lines.append("uipi_blocks=%s%s" % (blocked,
+                                           ("  (目标 %s)" % who) if who else ""))
+        lines.append("autostart=%s" % core.autostart_kind())
+    except Exception as exc:
+        lines.append("privilege=FAIL %r" % exc)
     try:
         h, inst = core.open_device(cfg.get("vid_pid") or None,
                                    cfg.get("hid_path") or None)
